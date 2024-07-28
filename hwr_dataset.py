@@ -102,10 +102,9 @@ class HWR_dataset(ABC):
                 text_label = text_label.replace("[UNK]", " ").strip()
                 y.append(text_label)
 
-            pred = model.predict(images)
-            pred = self.decoder_prediction(pred)
-            y_pred += pred
-
+        y_pred = model.predict(data)
+        y_pred = self.decoder_prediction(y_pred)
+    
         return y, y_pred    
 
         @abstractmethod
@@ -162,7 +161,7 @@ class IAM_dataset(HWR_dataset):
         self.max_label_length = max(map(len, self.df['label']))
 
     def __select_taskset(self, file):
-        with open(sel.path/'task'/file, 'r') as f:
+        with open(self.path/'task'/file, 'r') as f:
             ids = f.read().splitlines()
         df = self.df[self.df['line'].isin(ids)]
         X = df['path'].tolist()

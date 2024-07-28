@@ -24,10 +24,3 @@ class CTCLayer(Layer):
         self.add_loss(loss)
 
         return y_hat
-
-    # def get_config(self):
-    #     # Return a dictionary containing the layer configuration
-    #     config = super().get_config()
-    #     # No additional configuration parameters for this layer, so return the base config
-    #     return config
-    
