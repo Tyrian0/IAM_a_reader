@@ -3,17 +3,15 @@ import pandas as pd
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-import spicy
 import tensorflow as tf
 import tensorflow.data as tfd
 from tensorflow.keras.layers import StringLookup
 from sklearn.model_selection import train_test_split
 
 class HWR_dataset(ABC):
-    def __init__(self, path, img_size, preserve_aspect_ratio):
+    def __init__(self, path, img_size):
         self.path = path
         self.img_size = img_size
-        self.preserve_aspect_ratio = preserve_aspect_ratio
 
     def load_image(self, image_path):
         """
@@ -29,36 +27,7 @@ class HWR_dataset(ABC):
         # convert image data type to float32
         convert_imgs = tf.image.convert_image_dtype(image=decoded_image, dtype=tf.float32)
         # resize and transpose 
-        resized_image = tf.image.resize(
-            images=convert_imgs, 
-            size=self.img_size[::-1],
-            preserve_aspect_ratio=self.preserve_aspect_ratio)
-        if self.preserve_aspect_ratio:
-            pad_height = self.img_size[1] - tf.shape(resized_image)[0]
-            pad_width = self.img_size[0] - tf.shape(resized_image)[1]            
-            if pad_height % 2 != 0:
-                height = pad_height // 2
-                pad_height_top = height + 1
-                pad_height_bottom = height
-            else:
-                pad_height_top = pad_height_bottom = pad_height // 2
-            if pad_width % 2 != 0:
-                width = pad_width // 2
-                pad_width_left = width + 1
-                pad_width_right = width
-            else:
-                pad_width_left = pad_width_right = pad_width // 2
-            flat_image = resized_image.numpy().reshape(-1, resized_image.numpy().shape[-1])
-            pad_value = spicy.stats.mode(flat_image, axis=0).mode[0]
-            resized_image = tf.pad(
-                resized_image,
-                paddings=[
-                    [pad_height_top, pad_height_bottom],
-                    [pad_width_left, pad_width_right],
-                    [0, 0],
-                ],
-                constant_values=pad_value
-            )
+        resized_image = tf.image.resize(images=convert_imgs, size=self.img_size[::-1])
         image = tf.transpose(resized_image, perm = [1, 0, 2])
 
         # to numpy array (Tensor)
@@ -147,7 +116,7 @@ class HWR_dataset(ABC):
             pass
 
 class IAM_dataset(HWR_dataset):
-    def _load(self, extra_spaces):
+    def _load(self):
         rows = []
         with open(self.path/'ascii/lines_spaces.txt', 'r') as f:
             for line in f:
@@ -160,15 +129,11 @@ class IAM_dataset(HWR_dataset):
                         form = doc + '-' + doc_line
                         path = str(self.path/'lines'/doc/form/(line[0]+'.png'))
                         label = ' '.join(line[8:])
-                        if extra_spaces:
-                            label = ' ' + label + ' '
                         rows.append([form, line_id, path, label])    
         columns = ['form','line', 'path', 'label']
         return pd.DataFrame(rows, columns=columns)
 
-    def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2,
-                 task=False, include_all=False, preserve_aspect_ratio=False, 
-                 extra_spaces=False):
+    def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2, task=False, include_all=False):
         '''
         path: Roort directory of dataset.
         size: Size of images.
@@ -179,8 +144,8 @@ class IAM_dataset(HWR_dataset):
         task=False: Selects the partitions
         include_all=False: train contaisn all forms that are not in validation or test
         '''
-        super().__init__(path, size, preserve_aspect_ratio)
-        self.df = self._load(extra_spaces).sample(frac=1, random_state=seed)
+        super().__init__(path, size)
+        self.df = self._load().sample(frac=1, random_state=seed)
         if reduced:
             self.df['form'] = self.df['line'].str.split('-').str[:2].str.join('-')
             self.df = self.df.groupby(['form']).first().reset_index(drop=True)
@@ -201,9 +166,8 @@ class IAM_dataset(HWR_dataset):
         else:                                                                  
             X = self.df['path'].tolist()
             y = self.df['label'].tolist()
-            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
+            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, random_state=seed)
             self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=val_size, shuffle=False)
-            self.y_test = [label.strip() for label in self.y_test] #No extra spaces in test
         self.unique_characters = set(char for word in self.y_train for char in word)
         self.unique_characters = sorted(list(self.unique_characters))
         self.n_classes = len(self.unique_characters)
