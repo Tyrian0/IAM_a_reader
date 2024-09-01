@@ -24,25 +24,3 @@ class CTCLayer(Layer):
         self.add_loss(loss)
 
         return y_hat
-
-@register_keras_serializable()
-class WeightedCTCLayer(Layer):
-    def __init__(self, weight=1.0, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.weight = weight
-        self.loss_function = tf.keras.backend.ctc_batch_cost
-
-    def call(self, y_true, y_hat):
-        batch_len = tf.cast(tf.shape(y_true)[0], dtype="int64")
-        input_len = tf.cast(tf.shape(y_hat)[1], dtype='int64') * tf.ones(shape=(batch_len, 1), dtype='int64')
-        label_len = tf.cast(tf.shape(y_true)[1], dtype='int64') * tf.ones(shape=(batch_len, 1), dtype='int64')
-
-        loss = self.loss_function(y_true, y_hat, input_len, label_len)
-        self.add_loss(self.weight * loss)
-
-        return y_hat
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"weight": self.weight})
-        return config

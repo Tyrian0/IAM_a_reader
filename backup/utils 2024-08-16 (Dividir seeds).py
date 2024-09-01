@@ -11,7 +11,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.image as implt
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from PIL import Image
 import tensorflow as tf
 import tensorflow.data as tfd
@@ -75,16 +74,15 @@ def find_current_epoch(path):
         last_epoch = int(pd.read_csv(f, sep=',').iloc[-1,0])
     return last_epoch + 1 #Log starts with 0
 
-def perform_experiment(model=None, initial_epoch=0, **kwargs):
+def perform_experiment(model=None, initial_epoch=1, **kwargs):
     '''
     This function encapsules all the logic begind of a experiment.
     '''
     experiment_path = kwargs.get('experiment_path', Path('.'))
     seed = kwargs.get('seed', 42)
-    keras_seed = kwargs.get('keras_seed', seed)
     epochs = kwargs.get('epochs', 200)
-    img_width = kwargs.get('img_width', 1024)
-    img_height = kwargs.get('img_height', 128)     
+    img_width = kwargs.get('img_width', 128)
+    img_height = kwargs.get('img_height', 1024)     
     img_size = (img_width, img_height)
     dataset_path = kwargs.get('dataset_path', Path(r'data\IAM'))
     task = kwargs.get('task', False)
@@ -111,7 +109,7 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
     with open(str(experiment_path/'hyperparameters.json'), 'w') as f:
         json.dump(kwargs, f, default=custom_serialize)
 
-    tf.keras.utils.set_random_seed(keras_seed)
+    tf.keras.utils.set_random_seed(seed)
     
     # Dataset load
     iam_dataset = IAM_dataset(dataset_path, img_size, reduced=reduced, 
@@ -180,10 +178,10 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
     sns.set_palette('deep')
     fig, ax = plt.subplots(figsize=(10, 6))
     fig.patch.set_facecolor('white')
-    history_df.plot(y=['loss', 'val_loss'], ax=ax, labels=['Entrenamiento', 'Validación'])
+    history_df.plot(y=['loss', 'val_loss'], ax=ax)
     ax.legend(fontsize=12)
-    ax.set_ylabel('Pérdidas CTC')
-    ax.set_xlabel('Época')
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel('CTC Loss Score')
     ax.xaxis.set_ticks_position('bottom')
     ax.yaxis.set_ticks_position('left')
     plt.tight_layout()
@@ -218,90 +216,3 @@ def continue_experiment(path, epochs):
     model = load_model(str(path/'model.keras'))
     model.optimizer.learning_rate.assign(learning_rate)
     perform_experiment(model=model, initial_epoch=current_epoch, **hyperparameters)
-
-def draw_layer(centers, sizes, color):
-    x_center, y_center, z_center = centers
-    x_size,  y_size, z_size = sizes
-    vertexes = [[x_center - x_size/2, y_center - y_size/2, z_center - z_size/2], 
-                [x_center + x_size/2, y_center - y_size/2, z_center - z_size/2],
-                [x_center + x_size/2, y_center + y_size/2, z_center - z_size/2], 
-                [x_center - x_size/2, y_center + y_size/2, z_center - z_size/2],
-                [x_center - x_size/2, y_center - y_size/2, z_center + z_size/2], 
-                [x_center + x_size/2, y_center - y_size/2, z_center + z_size/2],
-                [x_center + x_size/2, y_center + y_size/2, z_center + z_size/2], 
-                [x_center - x_size/2, y_center + y_size/2, z_center + z_size/2]]
-    edges = [[vertexes[j] for j in [0, 1, 2, 3]],
-             [vertexes[j] for j in [4, 5, 6, 7]],
-             [vertexes[j] for j in [0, 1, 5, 4]],
-             [vertexes[j] for j in [2, 3, 7, 6]],
-             [vertexes[j] for j in [1, 2, 6, 5]],
-             [vertexes[j] for j in [4, 7, 3, 0]]]
-    return Poly3DCollection(edges, facecolors='white', linewidths=1, edgecolors=color, alpha=1)
-
-def draw_DNN(layers, space_layer=1, image=None, space_image=10, label=None, space_label=40):
-    fig = plt.figure(figsize=(30, 20))
-    ax = fig.add_subplot(111, projection='3d', computed_zorder=False)
-    
-    # Draw input image
-    if image is not None:
-        pos = -layers[0][0]/2 - space_image
-        image = tf.transpose(image, perm = [1, 0, 2])
-        image = tf.squeeze(image, axis=2).numpy()
-        image = np.flipud(image) #Corrects the z inversion of mapig to mgrid
-        colors = plt.get_cmap('grey')(image)
-        nz, ny = image.shape
-        zi, yi = np.mgrid[-nz/2:nz/2 + 1, -ny/2:ny/2 + 1]
-        xi = np.full_like(yi, pos)
-        ax.plot_surface(xi, yi, zi, rstride=1, cstride=1, facecolors=colors, shade=False)
-
-    # Draw DNN
-    x_center = 0
-    for x_size,  y_size, z_size, color in layers:
-        x_center += x_size / 2
-        layer = draw_layer((x_center, 0, 0), (x_size,  y_size, z_size), color)
-        ax.add_collection3d(layer)
-
-        if color == 'black':
-            layer_label = rf'{x_size} $\times ({3}, {3})$'
-        elif color in ['orange', 'blue']:
-            layer_label = f'{x_size}'
-        if color in ['black', 'orange', 'blue']:
-            ax.text(x_center, 0, z_size/2, layer_label, 'y', color='black', 
-                    fontsize=10, ha='center', va='center', fontdict={'family': 'Arial'})
-        x_center += x_size / 2 + space_layer
-    x_center -= space_layer
-
-    # Draw output label
-    x_center += space_label
-    if label:
-        ax.text(x_center, 0, 0, label, 'y', color='black', 
-                fontsize=15, ha='center', va='center', fontdict={'family': 'Arial'})
-    
-
-    # Ajust axis aspect ratio
-    Y_size = max([p[2] for p in layers])
-    Z_size = max([p[1] for p in layers])
-    max_size = max(Y_size, Z_size)    
-    ax.set_xlim([0, x_center])
-    ax.set_ylim([-max_size/2, max_size/2])
-    ax.set_zlim([-max_size/2, max_size/2])
-    ax.set_axis_off()
-
-    # Draw legend
-    legend = {'black': 'Convolucional', 
-              'red': 'Max pooling', 
-              'purple': 'Redimension',
-              'orange': 'Densa',
-              'brown': 'Softmax',
-              'blue': 'BiLSTM',
-              'green': 'Decodificador CTC'}
-    size = 32
-    x_center, y_center, z_center = x_center/2, max_size/2, 0
-    for color, label in legend.items():
-        layer = draw_layer((x_center, y_center, z_center), (size, size, size), color)
-        ax.add_collection3d(layer)
-        ax.text(x_center + size + space_layer, y_center + size/2, z_center, label, color=color, 
-                    fontsize=10, ha='left', va='center', fontdict={'family': 'Arial'})
-        z_center += size + space_layer
-
-    plt.show()

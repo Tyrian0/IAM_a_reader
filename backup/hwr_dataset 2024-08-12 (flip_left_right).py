@@ -7,7 +7,6 @@ import tensorflow as tf
 import tensorflow.data as tfd
 from tensorflow.keras.layers import StringLookup
 from sklearn.model_selection import train_test_split
-from PIL import Image
 
 class HWR_dataset(ABC):
     def __init__(self, path, img_size, preserve_aspect_ratio, img_negative):
@@ -164,17 +163,11 @@ class IAM_dataset(HWR_dataset):
                         form = doc + '-' + doc_line
                         path = str(self.path/'lines'/doc/form/(line[0]+'.png'))
                         label = ' '.join(line[8:])
+                        if extra_spaces:
+                            label = ' ' + label + ' '
                         rows.append([form, line_id, path, label])    
         columns = ['form','line', 'path', 'label']
-        df = pd.DataFrame(rows, columns=columns)
-        if extra_spaces == 'all':
-            df['label'] = ' ' + df['label'] + ' '
-        elif  extra_spaces == 'selective':
-            sizes = [Image.open(path).size for path in df['path'].tolist()]  
-            sizes_df = pd.DataFrame(sizes, columns=['Lx', 'Ly'])
-            mask = sizes_df["Ly"] > (128/1024 * sizes_df["Lx"])
-            df['label'][mask] = ' ' + df['label'][mask] + ' '
-        return df
+        return pd.DataFrame(rows, columns=columns)
 
     def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2,
                  task=False, include_all=False, preserve_aspect_ratio=False, 

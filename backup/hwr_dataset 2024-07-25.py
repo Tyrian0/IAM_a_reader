@@ -7,14 +7,11 @@ import tensorflow as tf
 import tensorflow.data as tfd
 from tensorflow.keras.layers import StringLookup
 from sklearn.model_selection import train_test_split
-from PIL import Image
 
 class HWR_dataset(ABC):
-    def __init__(self, path, img_size, preserve_aspect_ratio, img_negative):
+    def __init__(self, path, img_size):
         self.path = path
         self.img_size = img_size
-        self.preserve_aspect_ratio = preserve_aspect_ratio
-        self.img_negative = img_negative
 
     def load_image(self, image_path):
         """
@@ -30,43 +27,11 @@ class HWR_dataset(ABC):
         # convert image data type to float32
         convert_imgs = tf.image.convert_image_dtype(image=decoded_image, dtype=tf.float32)
         # resize and transpose 
-        resized_image = tf.image.resize(
-            images=convert_imgs, 
-            size=self.img_size[::-1],
-            preserve_aspect_ratio=self.preserve_aspect_ratio)
-        if self.preserve_aspect_ratio:
-            pad_height = self.img_size[1] - tf.shape(resized_image)[0]
-            pad_width = self.img_size[0] - tf.shape(resized_image)[1]            
-            if pad_height % 2 != 0:
-                height = pad_height // 2
-                pad_height_top = height + 1
-                pad_height_bottom = height
-            else:
-                pad_height_top = pad_height_bottom = pad_height // 2
-            if pad_width % 2 != 0:
-                width = pad_width // 2
-                pad_width_left = width + 1
-                pad_width_right = width
-            else:
-                pad_width_left = pad_width_right = pad_width // 2
-            flattened_image = tf.reshape(resized_image, [-1])
-            unique_values, _, counts = tf.unique_with_counts(flattened_image)
-            pad_value = unique_values[tf.argmax(counts)]
-            resized_image = tf.pad(
-                resized_image,
-                paddings=[
-                    [pad_height_top, pad_height_bottom],
-                    [pad_width_left, pad_width_right],
-                    [0, 0],
-                ],
-                constant_values=pad_value
-            )
+        resized_image = tf.image.resize(images=convert_imgs, size=self.img_size[::-1])
         image = tf.transpose(resized_image, perm = [1, 0, 2])
 
         # to numpy array (Tensor)
         image_array = tf.cast(image, dtype=tf.float32)
-        if self.img_negative:
-            image_array = 1.0 - image_array
 
         return image_array 
 
@@ -151,7 +116,7 @@ class HWR_dataset(ABC):
             pass
 
 class IAM_dataset(HWR_dataset):
-    def _load(self, extra_spaces):
+    def _load(self):
         rows = []
         with open(self.path/'ascii/lines_spaces.txt', 'r') as f:
             for line in f:
@@ -164,56 +129,30 @@ class IAM_dataset(HWR_dataset):
                         form = doc + '-' + doc_line
                         path = str(self.path/'lines'/doc/form/(line[0]+'.png'))
                         label = ' '.join(line[8:])
-                        rows.append([form, line_id, path, label])    
+                        rows.append([form, line_id, path, label])
+    
         columns = ['form','line', 'path', 'label']
-        df = pd.DataFrame(rows, columns=columns)
-        if extra_spaces == 'all':
-            df['label'] = ' ' + df['label'] + ' '
-        elif  extra_spaces == 'selective':
-            sizes = [Image.open(path).size for path in df['path'].tolist()]  
-            sizes_df = pd.DataFrame(sizes, columns=['Lx', 'Ly'])
-            mask = sizes_df["Ly"] > (128/1024 * sizes_df["Lx"])
-            df['label'][mask] = ' ' + df['label'][mask] + ' '
-        return df
+        return pd.DataFrame(rows, columns=columns)
 
-    def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2,
-                 task=False, include_all=False, preserve_aspect_ratio=False, 
-                 extra_spaces=False, img_negative=False):
-        '''
-        path: Roort directory of dataset.
-        size: Size of images.
-        seed=42: Random seed.
-        reduced=False: Selecsts one line for formulary.
-        test_size=0.2: Fraction of dataset destined to test.
-        val_size=0.2: (1-test_size)*val_size is the fraction of datasewt destined to validation.
-        task=False: Selects the partitions
-        include_all=False: train contaisn all forms that are not in validation or test
-        '''
-        super().__init__(path, size, preserve_aspect_ratio, img_negative)
-        self.df = self._load(extra_spaces).sample(frac=1, random_state=seed)
+    def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2, task=False):
+        super().__init__(path, size)
+        self.df = self._load()
         if reduced:
             self.df['form'] = self.df['line'].str.split('-').str[:2].str.join('-')
-            self.df = self.df.groupby(['form']).first().reset_index(drop=True)
+            self.df = self.df.groupby(['form']).apply(lambda x: x.sample(n=1, random_state=seed))\
+                                               .reset_index(drop=True)
         if task:
+            self.X_train, self.y_train = self.__select_taskset('trainset.txt')
             X_val1, y_val1 = self.__select_taskset('validationset1.txt')
             X_val2, y_val2 = self.__select_taskset('validationset2.txt')
             self.X_val = X_val1 + X_val2
             self.y_val = y_val1 + y_val2
             self.X_test, self.y_test = self.__select_taskset('testset.txt')
-            if include_all:
-                val_forms = set(form.split('\\')[-2] for form in self.X_val)
-                test_forms = set(form.split('\\')[-2] for form in self.X_test)
-                train_df = self.df[~self.df['form'].isin(val_forms | test_forms)]             
-                self.X_train = train_df['path'].tolist()
-                self.y_train = train_df['label'].tolist()
-            else:
-                self.X_train, self.y_train = self.__select_taskset('trainset.txt')
         else:                                                                  
             X = self.df['path'].tolist()
             y = self.df['label'].tolist()
-            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
+            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, random_state=seed)
             self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=val_size, shuffle=False)
-            self.y_test = [label.strip() for label in self.y_test] #No extra spaces in test
         self.unique_characters = set(char for word in self.y_train for char in word)
         self.unique_characters = sorted(list(self.unique_characters))
         self.n_classes = len(self.unique_characters)
@@ -223,8 +162,8 @@ class IAM_dataset(HWR_dataset):
 
     def __select_taskset(self, file):
         with open(self.path/'task'/file, 'r') as f:
-            lines = f.read().splitlines()
-        df = self.df[self.df['line'].isin(lines)]
+            ids = f.read().splitlines()
+        df = self.df[self.df['line'].isin(ids)]
         X = df['path'].tolist()
         y = df['label'].tolist()
         return X, y
@@ -269,8 +208,8 @@ class Written_names_dataset(HWR_dataset):
         columns = ['form','line', 'path', 'label']
         return pd.DataFrame(rows, columns=columns)
 
-    def __init__(self, path, size, preserve_aspect_ratio=False, img_negative=False):
-        super().__init__(path, size, preserve_aspect_ratio, img_negative)
+    def __init__(self, path, size):
+        super().__init__(path, size)
         self.train_csv = pd.read_csv(path/'CSV/train.csv')
         self.test_csv = pd.read_csv(path/'CSV/test.csv')
         self.val_csv = pd.read_csv(path/'CSV/validation.csv')

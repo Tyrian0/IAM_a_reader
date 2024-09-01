@@ -7,14 +7,12 @@ import tensorflow as tf
 import tensorflow.data as tfd
 from tensorflow.keras.layers import StringLookup
 from sklearn.model_selection import train_test_split
-from PIL import Image
 
 class HWR_dataset(ABC):
-    def __init__(self, path, img_size, preserve_aspect_ratio, img_negative):
+    def __init__(self, path, img_size, preserve_aspect_ratio):
         self.path = path
         self.img_size = img_size
         self.preserve_aspect_ratio = preserve_aspect_ratio
-        self.img_negative = img_negative
 
     def load_image(self, image_path):
         """
@@ -65,8 +63,6 @@ class HWR_dataset(ABC):
 
         # to numpy array (Tensor)
         image_array = tf.cast(image, dtype=tf.float32)
-        if self.img_negative:
-            image_array = 1.0 - image_array
 
         return image_array 
 
@@ -164,21 +160,15 @@ class IAM_dataset(HWR_dataset):
                         form = doc + '-' + doc_line
                         path = str(self.path/'lines'/doc/form/(line[0]+'.png'))
                         label = ' '.join(line[8:])
+                        if extra_spaces:
+                            label = ' ' + label + ' '
                         rows.append([form, line_id, path, label])    
         columns = ['form','line', 'path', 'label']
-        df = pd.DataFrame(rows, columns=columns)
-        if extra_spaces == 'all':
-            df['label'] = ' ' + df['label'] + ' '
-        elif  extra_spaces == 'selective':
-            sizes = [Image.open(path).size for path in df['path'].tolist()]  
-            sizes_df = pd.DataFrame(sizes, columns=['Lx', 'Ly'])
-            mask = sizes_df["Ly"] > (128/1024 * sizes_df["Lx"])
-            df['label'][mask] = ' ' + df['label'][mask] + ' '
-        return df
+        return pd.DataFrame(rows, columns=columns)
 
     def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2,
                  task=False, include_all=False, preserve_aspect_ratio=False, 
-                 extra_spaces=False, img_negative=False):
+                 extra_spaces=False):
         '''
         path: Roort directory of dataset.
         size: Size of images.
@@ -189,7 +179,7 @@ class IAM_dataset(HWR_dataset):
         task=False: Selects the partitions
         include_all=False: train contaisn all forms that are not in validation or test
         '''
-        super().__init__(path, size, preserve_aspect_ratio, img_negative)
+        super().__init__(path, size, preserve_aspect_ratio)
         self.df = self._load(extra_spaces).sample(frac=1, random_state=seed)
         if reduced:
             self.df['form'] = self.df['line'].str.split('-').str[:2].str.join('-')
@@ -269,8 +259,8 @@ class Written_names_dataset(HWR_dataset):
         columns = ['form','line', 'path', 'label']
         return pd.DataFrame(rows, columns=columns)
 
-    def __init__(self, path, size, preserve_aspect_ratio=False, img_negative=False):
-        super().__init__(path, size, preserve_aspect_ratio, img_negative)
+    def __init__(self, path, size):
+        super().__init__(path, size)
         self.train_csv = pd.read_csv(path/'CSV/train.csv')
         self.test_csv = pd.read_csv(path/'CSV/test.csv')
         self.val_csv = pd.read_csv(path/'CSV/validation.csv')
