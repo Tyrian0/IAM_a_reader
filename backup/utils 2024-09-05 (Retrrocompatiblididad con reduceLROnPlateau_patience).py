@@ -46,11 +46,9 @@ def custom_serialize(obj):
         return obj.tolist() 
     raise TypeError(f'Tipo {type(obj)} no serializable')
 
-def find_current_lr(path, patience):    
+def find_current_lr(path, patience):
+    log_path = path / "training.log"      
     current_lr = 0.001
-    if not patience:
-        return current_lr
-    log_path = path / "training.log"  
     best_val_loss = float('inf')
     epochs_without_improvement = 0
     lr_reductions = 0
@@ -156,7 +154,7 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
         output_rnn = Dense(len(iam_dataset.char_to_num.get_vocabulary())+1, activation='softmax', name='output_dense')(x)
         ctc_loss_rnn = CTCLayer()(input_labels, output_rnn)
         if ctc_shortcut:
-            output_shortcut = Conv1D(len(iam_dataset.char_to_num.get_vocabulary())+1, 3, padding='same', activation='softmax', name='ctc_shortcut')(output_dense)
+            output_shortcut = Conv1D(len(iam_dataset.char_to_num.get_vocabulary())+1, 3, activation='softmax', name='ctc_shortcut')(output_dense)
             ctc_loss_shortcut = WeightedCTCLayer(0.1)(input_labels, output_shortcut)
             model = Model(inputs=[input_images, input_labels], outputs=[ctc_loss_rnn, ctc_loss_shortcut])
         else:
@@ -215,10 +213,11 @@ def continue_experiment(path, epochs):
     hyperparameters = load_hyperparameters(path) 
     
     current_epoch = find_current_epoch(path)   
-
-    hyperparameters['epochs'] = current_epoch + epochs    
-    patience = hyperparameters.get('reduceLROnPlateau_patience', False)
-    learning_rate = find_current_lr(path, patience)
+    hyperparameters['epochs'] = current_epoch + epochs
+    if hyperparameters['reduceLROnPlateau_patience']:
+        learning_rate = find_current_lr(path, hyperparameters['reduceLROnPlateau_patience'])
+    else:
+        learning_rate = 0.001
     model = load_model(str(path/'model.keras'))
     model.optimizer.learning_rate.assign(learning_rate)
     perform_experiment(model=model, initial_epoch=current_epoch, **hyperparameters)
@@ -293,20 +292,18 @@ def draw_DNN(layers, space_layer=1, image=None, space_image=10, label=None, spac
 
     # Draw legend
     legend = {'black': 'Convolucional', 
-              'red': r'$\it Max\ pooling$', 
+              'red': 'Max pooling', 
               'purple': 'Redimension',
-              'olive': r'$\it Max\ pooling$ por columnas',
               'orange': 'Densa',
               'brown': 'Softmax',
               'blue': 'BiLSTM',
               'green': 'Decodificador CTC'}
     size = 32
     x_center, y_center, z_center = x_center/2, max_size/2, 0
-    layer_color_set = set(layer[-1] for layer in layers)
-    for color in layer_color_set:
+    for color, label in legend.items():
         layer = draw_layer((x_center, y_center, z_center), (size, size, size), color)
         ax.add_collection3d(layer)
-        ax.text(x_center + size + space_layer, y_center + size/2, z_center, legend[color], color=color, 
+        ax.text(x_center + size + space_layer, y_center + size/2, z_center, label, color=color, 
                     fontsize=10, ha='left', va='center', fontdict={'family': 'Arial'})
         z_center += size + space_layer
 
