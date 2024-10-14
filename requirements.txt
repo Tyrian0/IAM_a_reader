@@ -57,7 +57,7 @@ namex==0.0.8
 nest_asyncio @ file:///home/conda/feedstock_root/build_artifacts/nest-asyncio_1705850609492/work
 networkx==3.3
 numpy==1.26.4
-openai==0.28.0
+openai==1.51.2
 opt_einsum==3.4.0
 optree==0.12.1
 packaging @ file:///home/conda/feedstock_root/build_artifacts/packaging_1718189413536/work

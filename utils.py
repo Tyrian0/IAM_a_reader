@@ -4,6 +4,7 @@ import sys
 import os
 import json
 import csv
+import base64
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger
 from sklearn.model_selection import train_test_split
 import torch
 from torchmetrics.text import CharErrorRate, WordErrorRate
+from openai import OpenAI 
 
 from ctc_layer import CTCLayer, WeightedCTCLayer
 from hwr_dataset import IAM_dataset
@@ -380,3 +382,61 @@ def draw_DNN(space_layer=10, image_path=None, space_image=10, label=None, space_
 
     plt.savefig(str(experiment_path/'model.png'), facecolor='white', edgecolor='none')
     plt.show()
+
+def save_list(file_path, data):
+    with open(file_path, "w") as f:
+        for line in data:            
+            line = line.replace('\n', '[endl]')
+            f.write(line + '\n')
+
+def load_list(file_path):
+    lista = []
+    with open(file_path, 'r') as archivo:
+        for linea in archivo:
+            linea = linea[:-1]  #Errase end line caharacter
+            linea = linea.replace('[endl]', '\n')
+            lista.append(linea)
+    return lista
+
+def evaluate_LLM(api_key, experiment_path, model, dataset_path=Path(r'data\IAM'), seed=42):
+    iam_dataset = IAM_dataset(dataset_path, (1024, 128), task=True, seed=seed)
+    labels = iam_dataset.y_test
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", api_key))
+
+    
+    experiment_path.mkdir(parents=True, exist_ok=True)
+
+    total_images = len(iam_dataset.X_test)
+    preds = []
+    for i, image_path in enumerate(iam_dataset.X_test):
+        with open(image_path, "rb") as image_file:
+            base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an expert in transcribing handwritten texts. Your task is to convert handwritten text into an accurate and legible digital transcription. The handwriting may vary in clarity, so you should do your best to interpret the text while maintaining fidelity to the original content. Preserve the punctuation and capitalization. Do not add any extra information that is not present in the manuscript. If the text contains abbreviations or spelling errors, try to transcribe them as they appear. Respond only with the transcription."},
+                    {"role": "user", "content": [{
+                        "type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}]}                    
+                ],
+                temperature=0.0,
+            )
+        preds.append(response.choices[0].message.content)
+
+        # Update progress bar
+        progress = int(50 * (i + 1) / total_images)
+        bar = "#" * progress + "-" * (50 - progress)
+        print(f"\rProgress: [{bar}] {int(100 * (i + 1) / total_images)}%", end="")
+    print()
+    save_list(str(experiment_path/'preds.txt'), preds)
+    
+    metrics = {}
+    metrics['accuracy'] = calculate_accuracy(preds, labels)
+    metrics['wer'] = WordErrorRate()(preds, labels)
+    metrics['cer'] = CharErrorRate()(preds, labels)
+
+    print(f"Character error rate: {100*metrics['cer']:.1f} %")
+    print(f"Word error rate: {100*metrics['wer']:.0f} %")
+    print(f"Precisión: {100*metrics['accuracy']:.0f} %")
+
+    with open(str(experiment_path/'metrics.json'), 'w') as f:
+        json.dump(metrics, f, default=custom_serialize)
