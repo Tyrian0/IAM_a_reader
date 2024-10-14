@@ -94,11 +94,12 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
     reduced = kwargs.get('reduced', True)
     batch_size = kwargs.get('batch_size', 16)
     dropout_CNN = kwargs.get('dropout_CNN', 0.1)
-    dropout_dense = kwargs.get('dropout_dense', 0.4)
+    dropout_MLP = kwargs.get('dropout_MLP', 0.4)
     dropout_RNN = kwargs.get('dropout_RNN', 0.4)
     CNN = kwargs.get('CNN', ((64, 32), (64, 32)))
-    dense = kwargs.get('dense', (128,))
+    MLP = kwargs.get('MLP', (128,))
     RNN = kwargs.get('RNN', (128, 64, 64))
+    negative_slope = kwargs.get('negative_slope', 0)
     earlyStopping_patience = kwargs.get('earlyStopping_patience', 10)
     reduceLROnPlateau_patience = kwargs.get('reduceLROnPlateau_patience', False)
     savePredictions = kwargs.get('savePredictions', False)
@@ -108,6 +109,7 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
     img_negative = kwargs.get('img_negative', False)
     ctc_shortcut = kwargs.get('ctc_shortcut', False)
     flattening_method = kwargs.get('flattening_method', 'reshape')
+    augmentation_factor = kwargs.get('augmentation_factor', 0)
 
     experiment_path.mkdir(parents=True, exist_ok=True)
     with open(str(experiment_path/'hyperparameters.json'), 'w') as f:
@@ -119,7 +121,8 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
     iam_dataset = IAM_dataset(dataset_path, img_size, reduced=reduced, 
                               task=task, include_all=include_all, seed=seed, 
                               preserve_aspect_ratio=preserve_aspect_ratio,
-                              extra_spaces=extra_spaces, img_negative=img_negative)
+                              extra_spaces=extra_spaces, img_negative=img_negative,
+                              augmentation_factor=augmentation_factor)
     train_ds, val_ds, test_ds = iam_dataset.get_partitions(batch_size)
 
     # Model definition
@@ -135,7 +138,7 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
                 x = Conv2D(layer, 3, strides=1, padding='same', kernel_initializer='he_normal', name=f'conv_{i}_{j}')(x)
                 if batchNormalization:
                     x = BatchNormalization()(x)   
-                x = Activation('relu')(x)
+                x = LeakyReLU(negative_slope)(x)
                 x = Dropout(dropout_CNN, name=f'conv_{i}_{j}_dropout')(x)     
             if i < len(CNN) -1 or flattening_method == 'reshape':    
                 x = MaxPool2D(pool_size=(2, 2), strides=(2, 2), name=f'MaxPool_{i}')(x)
@@ -147,22 +150,22 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
             target_shape = (-1, x.shape[3]) 
         output_cnn = Reshape(target_shape=target_shape, name='reshape_layer')(x)
         x = output_cnn
-        for i, layer in enumerate(dense):
-            x = Dense(layer, kernel_initializer='he_normal', activation='relu', name=f'enconding_dense_{i}')(x)
-            x = Dropout(dropout_dense, name=f'enconding_dense_{i}_dropout')(x)
-        output_dense = x
+        for i, layer in enumerate(MLP):
+            x = Dense(layer, kernel_initializer='he_normal', activation='relu', name=f'MLP_{i}')(x)
+            x = Dropout(dropout_MLP, name=f'MLP_{i}_dropout')(x)
+        output_MLP = x
         for i, layer in enumerate(RNN):
             x = Bidirectional(LSTM(layer, return_sequences=True, dropout=dropout_RNN), name=f'bidirectional_lstm_{i}')(x)
-        output_rnn = Dense(len(iam_dataset.char_to_num.get_vocabulary())+1, activation='softmax', name='output_dense')(x)
+        output_rnn = Dense(len(iam_dataset.char_to_num.get_vocabulary())+1, activation='softmax', name='output_RNN')(x)
         ctc_loss_rnn = CTCLayer()(input_labels, output_rnn)
         if ctc_shortcut:
-            output_shortcut = Conv1D(len(iam_dataset.char_to_num.get_vocabulary())+1, 3, padding='same', activation='softmax', name='ctc_shortcut')(output_dense)
+            output_shortcut = Conv1D(len(iam_dataset.char_to_num.get_vocabulary())+1, 3, padding='same', activation='softmax', name='output_shortcut')(output_MLP)
             ctc_loss_shortcut = WeightedCTCLayer(0.1)(input_labels, output_shortcut)
             model = Model(inputs=[input_images, input_labels], outputs=[ctc_loss_rnn, ctc_loss_shortcut])
         else:
             model = Model(inputs=[input_images, input_labels], outputs=[ctc_loss_rnn])
         model.compile(optimizer='adam')
-    print(model.summary())
+    draw_DNN(**kwargs)
 
     # Model taining  
     callbacks = [
@@ -193,9 +196,14 @@ def perform_experiment(model=None, initial_epoch=0, **kwargs):
     plt.show()
 
     # Metrics visualization
-    pred_model = Model(inputs=model.get_layer(name="image").output, outputs=model.get_layer(name='output_dense').output)
+    pred_model = Model(inputs=model.get_layer(name="image").output, outputs=model.get_layer(name='output_RNN').output)
+    if ctc_shortcut:
+        eval_model = Model(inputs=model.input, outputs=model.layers[-2].output)
+        eval_model.compile(optimizer='adam')
+    else:
+        eval_model = model
     metrics = {}
-    metrics['loss'] = model.evaluate(val_ds)
+    metrics['loss'] = eval_model.evaluate(val_ds)
     labels, preds = iam_dataset.predict(val_ds, pred_model)
     metrics['accuracy'] = calculate_accuracy(preds, labels)
     metrics['wer'] = WordErrorRate()(preds, labels)
@@ -223,9 +231,10 @@ def continue_experiment(path, epochs):
     model.optimizer.learning_rate.assign(learning_rate)
     perform_experiment(model=model, initial_epoch=current_epoch, **hyperparameters)
 
-def draw_layer(centers, sizes, color):
+def draw_layer(ax, centers, sizes, color, label='', linestyle='solid'):
     x_center, y_center, z_center = centers
     x_size,  y_size, z_size = sizes
+    x_center += x_size/2
     vertexes = [[x_center - x_size/2, y_center - y_size/2, z_center - z_size/2], 
                 [x_center + x_size/2, y_center - y_size/2, z_center - z_size/2],
                 [x_center + x_size/2, y_center + y_size/2, z_center - z_size/2], 
@@ -240,15 +249,45 @@ def draw_layer(centers, sizes, color):
              [vertexes[j] for j in [2, 3, 7, 6]],
              [vertexes[j] for j in [1, 2, 6, 5]],
              [vertexes[j] for j in [4, 7, 3, 0]]]
-    return Poly3DCollection(edges, facecolors='white', linewidths=1, edgecolors=color, alpha=1)
+    layer = Poly3DCollection(edges, facecolors='white', linewidths=1, edgecolors=color, alpha=1, linestyle=linestyle)
+    ax.add_collection3d(layer)
+    ax.text(x_center, y_center, z_size/2, label, 'y', color='black', 
+                    fontsize=10, ha='center', va='center', fontdict={'family': 'Arial'})
 
-def draw_DNN(layers, space_layer=1, image=None, space_image=10, label=None, space_label=40):
+def draw_DNN(space_layer=10, image_path=None, space_image=10, label=None, space_label=40, **kwargs):
+    experiment_path = kwargs.get('experiment_path', Path('.'))
+    seed = kwargs.get('seed', 42)
+    img_width = kwargs.get('img_width', 1024)
+    img_height = kwargs.get('img_height', 128)     
+    img_size = (img_width, img_height)    
+    max_size = max(img_width, img_height)  
+    dataset_path = kwargs.get('dataset_path', Path(r'data\IAM'))
+    task = kwargs.get('task', False)
+    include_all = kwargs.get('include_all', False)
+    reduced = kwargs.get('reduced', True)
+    CNN = kwargs.get('CNN', ((64, 32), (64, 32)))
+    MLP = kwargs.get('MLP', (128,))
+    RNN = kwargs.get('RNN', (128, 64, 64))
+    preserve_aspect_ratio = kwargs.get('preserve_aspect_ratio', False)
+    extra_spaces = kwargs.get('extra_spaces', False)
+    img_negative = kwargs.get('img_negative', False)
+    ctc_shortcut = kwargs.get('ctc_shortcut', False)
+    flattening_method = kwargs.get('flattening_method', 'reshape')
+
+    iam_dataset = IAM_dataset(dataset_path, img_size, reduced=reduced, 
+                              task=task, include_all=include_all, seed=seed, 
+                              preserve_aspect_ratio=preserve_aspect_ratio,
+                              extra_spaces=extra_spaces, img_negative=img_negative)
+
+                              
+    
     fig = plt.figure(figsize=(30, 20))
     ax = fig.add_subplot(111, projection='3d', computed_zorder=False)
     
     # Draw input image
-    if image is not None:
-        pos = -layers[0][0]/2 - space_image
+    if image_path is not None:
+        pos = -CNN[0][0]/2 - space_image
+        image = iam_dataset.load_image(image_path)
         image = tf.transpose(image, perm = [1, 0, 2])
         image = tf.squeeze(image, axis=2).numpy()
         image = np.flipud(image) #Corrects the z inversion of mapig to mgrid
@@ -260,20 +299,53 @@ def draw_DNN(layers, space_layer=1, image=None, space_image=10, label=None, spac
 
     # Draw DNN
     x_center = 0
-    for x_size,  y_size, z_size, color in layers:
-        x_center += x_size / 2
-        layer = draw_layer((x_center, 0, 0), (x_size,  y_size, z_size), color)
-        ax.add_collection3d(layer)
-
-        if color == 'black':
-            layer_label = rf'{x_size} $\times ({3}, {3})$'
-        elif color in ['orange', 'blue']:
-            layer_label = f'{x_size}'
-        if color in ['black', 'orange', 'blue']:
-            ax.text(x_center, 0, z_size/2, layer_label, 'y', color='black', 
-                    fontsize=10, ha='center', va='center', fontdict={'family': 'Arial'})
-        x_center += x_size / 2 + space_layer
-    x_center -= space_layer
+    layer_color_set =  {'brown', 'green'}
+    for i, block in enumerate(CNN):
+        for filters in block:
+            layer_label = rf'{filters} $\times$ (3, 3)'
+            draw_layer(ax, (x_center, 0, 0), (filters,  img_width, img_height), 'black', layer_label)
+            layer_color_set.add('black')
+            x_center += filters + space_layer
+        if i < len(CNN) -1 or flattening_method == 'reshape':   
+            img_width //= 2
+            img_height //= 2
+            draw_layer(ax, (x_center, 0, 0), (img_height,  img_width, img_height), 'red')
+            layer_color_set.add('red')
+            x_center += img_height + space_layer
+    if flattening_method == 'reshape':
+        draw_layer(ax, (x_center, 0, 0), (filters*img_height, img_width, 1), 'purple')
+        layer_color_set.add('purple')
+        x_center += filters*img_height + space_layer
+    elif flattening_method == 'maxPooling':
+        draw_layer(ax, (x_center, 0, 0), (filters, img_width, 1), 'olive')
+        layer_color_set.add('olive')
+        x_center += filters + space_layer
+    for neurons in MLP:
+        layer_label = f'{neurons}'
+        draw_layer(ax, (x_center, 0, 0), (neurons, img_width, 1), 'orange', layer_label)
+        layer_color_set.add('orange')
+        x_center += neurons + space_layer
+    if ctc_shortcut:
+        y_center = (max(RNN) + space_layer)/2
+        x_size = len(iam_dataset.char_to_num.get_vocabulary())+1
+        draw_layer(ax, (x_center, y_center, 0), (x_size, img_width, 1), 'cyan', linestyle='dotted')
+        layer_color_set.add('cyan')
+        x_center_shortcut = x_center + x_size + space_layer
+        draw_layer(ax, (x_center_shortcut, y_center, 0), (x_size, img_width, 1), 'brown', linestyle='dotted')
+        x_center_shortcut += x_size + space_layer    
+        draw_layer(ax, (x_center_shortcut, y_center, 0), (1, iam_dataset.max_label_length, 1), 'green', linestyle='dotted')
+    else:
+        y_center = 0 
+    for cells in RNN:
+        layer_label = rf'2 $\times$ {cells}'
+        draw_layer(ax, (x_center, -y_center, 0), (2*cells, img_width, 1), 'blue', layer_label)
+        layer_color_set.add('blue')
+        x_center += 2*cells + space_layer
+    x_size = len(iam_dataset.char_to_num.get_vocabulary())+1
+    draw_layer(ax, (x_center, -y_center, 0), (x_size, img_width, 1), 'brown')
+    x_center += x_size + space_layer    
+    draw_layer(ax, (x_center, -y_center, 0), (1, iam_dataset.max_label_length, 1), 'green')
+    x_center += 1
 
     # Draw output label
     x_center += space_label
@@ -281,18 +353,15 @@ def draw_DNN(layers, space_layer=1, image=None, space_image=10, label=None, spac
         ax.text(x_center, 0, 0, label, 'y', color='black', 
                 fontsize=15, ha='center', va='center', fontdict={'family': 'Arial'})
     
-
-    # Ajust axis aspect ratio
-    Y_size = max([p[2] for p in layers])
-    Z_size = max([p[1] for p in layers])
-    max_size = max(Y_size, Z_size)    
+    # Ajust axis aspect ratio  
     ax.set_xlim([0, x_center])
     ax.set_ylim([-max_size/2, max_size/2])
     ax.set_zlim([-max_size/2, max_size/2])
     ax.set_axis_off()
 
     # Draw legend
-    legend = {'black': 'Convolucional', 
+    legend = {'black': 'Convolucional 2D', 
+              'cyan': 'Convolucional 1D', 
               'red': r'$\it Max\ pooling$', 
               'purple': 'Redimension',
               'olive': r'$\it Max\ pooling$ por columnas',
@@ -302,12 +371,12 @@ def draw_DNN(layers, space_layer=1, image=None, space_image=10, label=None, spac
               'green': 'Decodificador CTC'}
     size = 32
     x_center, y_center, z_center = x_center/2, max_size/2, 0
-    layer_color_set = set(layer[-1] for layer in layers)
     for color in layer_color_set:
-        layer = draw_layer((x_center, y_center, z_center), (size, size, size), color)
-        ax.add_collection3d(layer)
+        draw_layer(ax, (x_center, y_center, z_center), (size, size, size), color)
         ax.text(x_center + size + space_layer, y_center + size/2, z_center, legend[color], color=color, 
                     fontsize=10, ha='left', va='center', fontdict={'family': 'Arial'})
         z_center += size + space_layer
 
+
+    plt.savefig(str(experiment_path/'model.png'), facecolor='white', edgecolor='none')
     plt.show()

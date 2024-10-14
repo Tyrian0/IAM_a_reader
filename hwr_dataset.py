@@ -1,8 +1,10 @@
+from pathlib import Path
+import random
+import math
+
 import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
-from pathlib import Path
-
 import tensorflow as tf
 import tensorflow.data as tfd
 from tensorflow.keras.layers import StringLookup
@@ -178,7 +180,7 @@ class IAM_dataset(HWR_dataset):
 
     def __init__(self, path, size, seed=42, reduced=False, test_size=0.2, val_size=0.2,
                  task=False, include_all=False, preserve_aspect_ratio=False, 
-                 extra_spaces=False, img_negative=False):
+                 extra_spaces=False, img_negative=False, augmentation_factor=0):
         '''
         path: Roort directory of dataset.
         size: Size of images.
@@ -213,7 +215,8 @@ class IAM_dataset(HWR_dataset):
             y = self.df['label'].tolist()
             self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size, shuffle=False)
             self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=val_size, shuffle=False)
-            self.y_test = [label.strip() for label in self.y_test] #No extra spaces in test
+        self.__data_augmentation(augmentation_factor)
+        self.y_test = [label.strip() for label in self.y_test] #No extra spaces in test
         self.unique_characters = set(char for word in self.y_train for char in word)
         self.unique_characters = sorted(list(self.unique_characters))
         self.n_classes = len(self.unique_characters)
@@ -250,6 +253,44 @@ class IAM_dataset(HWR_dataset):
         ).batch(batch_size).prefetch(tfd.AUTOTUNE)
         return train_ds, val_ds, test_ds
 
+    def __data_augmentation(self, factor):
+        tam_X_train = len(self.X_train)
+        iteration = 1
+        if type(factor) == float:
+            num_samples = int(factor*tam_X_train)
+        else:
+            num_samples = factor            
+        (self.path/'data augmentation').mkdir(parents=True, exist_ok=True)
+
+        while num_samples > 0:
+            if num_samples > tam_X_train:
+                img_paths  = self.X_train
+            else:
+                img_paths  = self.X_train[:num_samples]
+            for origin_path, label in zip(img_paths, self.y_train):
+                with Image.open(origin_path) as img:
+                    target_path = self.path/'data augmentation'/(Path(origin_path).stem + f'_{iteration}.png')
+                    if not target_path.exists():
+                        img_array = np.array(img)
+                        fill_color = int(np.bincount(img_array.flatten()).argmax())
+
+                        w , h = img.size
+                        shear_factor = random.uniform(-1, 1)
+                        new_width = int(w + abs(shear_factor)*h)
+                        if shear_factor > 0:
+                            skewed_img = img.transform((new_width,h), Image.AFFINE, (1, shear_factor, -shear_factor*h, 0, 1, 0), fillcolor=fill_color)
+                        else:
+                            skewed_img = img.transform((new_width,h), Image.AFFINE, (1, shear_factor, 0, 0, 1, 0), fillcolor=fill_color)
+
+                        angle = random.uniform(-10, 10)
+                        rotated_img = skewed_img.rotate(angle, resample=Image.BICUBIC, expand=True, fillcolor=fill_color)
+                                
+                        rotated_img.save(target_path)
+                self.X_train.append(str(target_path))
+                self.y_train.append(label)
+            num_samples -= tam_X_train
+            iteration += 1
+
 class Written_names_dataset(HWR_dataset):
     def _load(self):
         rows = []
@@ -285,7 +326,7 @@ class Written_names_dataset(HWR_dataset):
         self.num_to_char = StringLookup(vocabulary = self.char_to_num.get_vocabulary(), mask_token = None, invert = True)
         self.max_label_length = max(map(len, train_labels))
 
-    def get_partitions(self, batch_size, seed=42):  
+    def get_partitions(self, batch_size, seed):  
         train_ds = tf.data.Dataset.from_tensor_slices(
             (np.array(self.train_csv['FILENAME'].to_list()), np.array(self.train_csv['IDENTITY'].to_list()))
         ).shuffle(seed).map(
